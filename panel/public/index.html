@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>NaiveProxy Quick</title><link rel="stylesheet" href="/app.css"></head>
+<body><main class="shell">
+  <header><div class="logo">NQ</div><div><h1>NaiveProxy Quick</h1><p>Private access manager</p></div></header>
+  <section class="card" id="loading">Checking the server…</section>
+  <form class="card" id="auth" hidden><div><span class="eyebrow" id="auth-step">First run</span><h2 id="auth-title">Create admin</h2></div><p class="error" id="auth-error" hidden></p><label>Username<input id="username" autocomplete="username" required></label><label>Password<input id="password" type="password" autocomplete="current-password" required></label><button type="submit">Continue</button></form>
+  <section class="card" id="app" hidden><div class="bar"><div><span class="eyebrow">Access</span><h2>Users</h2></div><button class="ghost" id="logout">Sign out</button></div><p class="server" id="server"></p><p class="error" id="error" hidden></p><form class="add" id="add"><input id="new-name" placeholder="New user name" maxlength="32" required><button>Add user</button></form><ul id="users"></ul><aside id="secret" hidden><div class="bar"><strong id="secret-title">Connection link</strong><button class="ghost" id="close-secret">Close</button></div><code id="link"></code><button id="copy">Copy link</button></aside></section>
+  <footer>Keep this panel behind a firewall, VPN, or HTTPS reverse proxy.</footer>
+</main><script type="module" src="/app.js"></script></body></html>

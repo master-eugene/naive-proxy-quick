@@ -1,0 +1,43 @@
+name: naive-proxy-quick
+
+services:
+  panel:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: naive-proxy-quick-panel:local
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    environment:
+      PORT: "${NPQ_UI_PORT:-51821}"
+      HOST: "${NPQ_UI_HOST:-127.0.0.1}"
+      DATA_DIR: /data
+      NPQ_DATA_DIR: /var/lib/naive-proxy-quick
+      NPQ_CADDYFILE: /etc/caddy/Caddyfile
+      NPQ_CADDY_GID: "${NPQ_CADDY_GID:-0}"
+      NODE_ENV: production
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - panel-data:/data
+      - /var/lib/naive-proxy-quick:/var/lib/naive-proxy-quick
+      - /etc/caddy:/etc/caddy
+      - /var/www/naive-proxy-quick:/var/www/naive-proxy-quick
+      - /usr/local/bin/caddy:/usr/local/bin/caddy:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  panel-data:

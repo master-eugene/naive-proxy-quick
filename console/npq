@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""NaiveProxy Quick user manager and interactive menu."""
+
+import argparse
+import grp
+import json
+import os
+import secrets
+import string
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import quote, urlparse
+
+DATA_DIR = Path(os.environ.get("NPQ_DATA_DIR", "/var/lib/naive-proxy-quick"))
+STATE_PATH = DATA_DIR / "state.json"
+CADDYFILE = Path(os.environ.get("NPQ_CADDYFILE", "/etc/caddy/Caddyfile"))
+WEB_ROOT = Path(os.environ.get("NPQ_WEB_ROOT", "/var/www/naive-proxy-quick"))
+JSON_MODE = False
+
+
+def fail(message, code=2):
+    if JSON_MODE:
+        print(json.dumps({"error": message}))
+    else:
+        print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def emit(payload):
+    if JSON_MODE:
+        print(json.dumps(payload, ensure_ascii=False))
+    return payload
+
+
+def load_state():
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except FileNotFoundError:
+        fail("NaiveProxy Quick is not initialized. Run the installer first.")
+    except (json.JSONDecodeError, OSError) as error:
+        fail(f"Could not read state: {error}")
+
+
+def save_state(state):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="state.", dir=DATA_DIR)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(state, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.chmod(name, 0o600)
+        os.replace(name, STATE_PATH)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def password():
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(24))
+
+
+def normalize_name(raw):
+    value = (raw or "").strip()
+    if not 1 <= len(value) <= 32 or not all(ch.isalnum() or ch in "._-" for ch in value):
+        fail("Name must be 1-32 letters, numbers, dots, dashes, or underscores.")
+    return value
+
+
+def user_link(state, user):
+    server = state["server"]
+    auth = f"{quote(user['name'], safe='')}:{quote(user['password'], safe='')}"
+    suffix = "" if int(server["port"]) == 443 else f":{server['port']}"
+    return f"naive+https://{auth}@{server['domain']}{suffix}"
+
+
+def proxy_url(state, user):
+    server = state["server"]
+    auth = f"{quote(user['name'], safe='')}:{quote(user['password'], safe='')}"
+    suffix = "" if int(server["port"]) == 443 else f":{server['port']}"
+    return f"https://{auth}@{server['domain']}{suffix}"
+
+
+def client_config(state, user):
+    server = state["server"]
+    return {
+        "outbounds": [{
+            "type": "naive",
+            "tag": "NaiveProxy",
+            "server": server["domain"],
+            "server_port": int(server["port"]),
+            "username": user["name"],
+            "password": user["password"],
+            "tls": {"enabled": True, "server_name": server["domain"], "insecure": False},
+        }],
+        "route": {"final": "NaiveProxy"},
+    }
+
+
+def public_user(state, user, include_secret=False):
+    item = {"id": user["id"], "name": user["name"], "enabled": bool(user["enabled"])}
+    if include_secret:
+        item.update(password=user["password"], proxy=proxy_url(state, user), link=user_link(state, user), config=client_config(state, user))
+    return item
+
+
+def caddy_quote(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def caddy_gid():
+    configured = os.environ.get("NPQ_CADDY_GID", "").strip()
+    if configured.isdigit():
+        return int(configured)
+    try:
+        return grp.getgrnam("caddy").gr_gid
+    except KeyError:
+        return None
+
+
+def render(state):
+    enabled = [user for user in state["users"] if user["enabled"]]
+    if not enabled:
+        fail("At least one user must remain enabled.")
+    server = state["server"]
+    auth = "\n".join(
+        f"            basic_auth {caddy_quote(user['name'])} {caddy_quote(user['password'])}" for user in enabled
+    )
+    fallback = f"""        reverse_proxy {caddy_quote(server['decoy_url'])} {{
+            header_up Host {{upstream_hostport}}
+            header_up X-Forwarded-Host {{host}}
+        }}""" if server.get("decoy_url") else f"""        file_server {{
+            root {WEB_ROOT}
+        }}"""
+    return f"""{{
+    https_port {server['port']}
+    log {{
+        exclude http.log.error
+    }}
+}}
+
+:{server['port']}, {server['domain']} {{
+    encode
+    route {{
+        forward_proxy {{
+{auth}
+            hide_ip
+            hide_via
+            probe_resistance
+        }}
+{fallback}
+    }}
+}}
+"""
+
+
+def apply(state, reload_service=True):
+    CADDYFILE.parent.mkdir(parents=True, exist_ok=True)
+    content = render(state)
+    fd, name = tempfile.mkstemp(prefix="Caddyfile.", dir=CADDYFILE.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+        os.chmod(name, 0o640)
+        group = caddy_gid()
+        if group is not None:
+            os.chown(name, -1, group)
+        check = subprocess.run(["caddy", "validate", "--config", name, "--adapter", "caddyfile"], text=True, capture_output=True)
+        if check.returncode:
+            fail((check.stderr or check.stdout or "Caddy rejected the generated config.").strip())
+        os.replace(name, CADDYFILE)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+    save_state(state)
+    if reload_service:
+        result = subprocess.run(["caddy", "reload", "--config", str(CADDYFILE), "--adapter", "caddyfile", "--force"], text=True, capture_output=True)
+        if result.returncode:
+            fail((result.stderr or "Could not reload NaiveProxy.").strip(), 1)
+
+
+def init_server(args):
+    if not args.domain:
+        fail("Domain is required.")
+    state = load_state() if STATE_PATH.exists() else {"version": 1, "users": []}
+    previous = state.get("server", {})
+    decoy = previous.get("decoy_url", "")
+    if args.decoy_url:
+        decoy = "" if args.decoy_url.lower() == "none" else args.decoy_url
+    if decoy:
+        parsed = urlparse(decoy)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            fail("Camouflage URL must be an http(s) origin without credentials, path, query, or fragment.")
+    state["server"] = {"domain": args.domain.lower(), "port": args.port, "decoy_url": decoy}
+    created = None
+    if not state["users"]:
+        created = {"id": 1, "name": "user-1", "password": password(), "enabled": True}
+        state["users"].append(created)
+    apply(state, reload_service=not args.no_reload)
+    return emit({"server": state["server"], "created": public_user(state, created, True) if created else None})
+
+
+def find_user(state, user_id):
+    for user in state["users"]:
+        if user["id"] == user_id:
+            return user
+    fail(f"User {user_id} was not found.")
+
+
+def list_users(_args=None):
+    state = load_state()
+    return emit({"server": state["server"], "users": [public_user(state, user) for user in state["users"]]})
+
+
+def add_user(args):
+    state = load_state()
+    name = normalize_name(args.name)
+    if any(user["name"].lower() == name.lower() for user in state["users"]):
+        fail("That name is already in use.")
+    user = {"id": max((item["id"] for item in state["users"]), default=0) + 1, "name": name, "password": password(), "enabled": True}
+    state["users"].append(user)
+    apply(state)
+    return emit({"user": public_user(state, user, True)})
+
+
+def show_user(args):
+    state = load_state()
+    return emit({"user": public_user(state, find_user(state, args.id), True)})
+
+
+def set_enabled(args, enabled):
+    state = load_state()
+    user = find_user(state, args.id)
+    if not enabled and user["enabled"] and sum(bool(item["enabled"]) for item in state["users"]) == 1:
+        fail("The last enabled user cannot be disabled.")
+    user["enabled"] = enabled
+    apply(state)
+    return emit({"user": public_user(state, user)})
+
+
+def remove_user(args):
+    state = load_state()
+    user = find_user(state, args.id)
+    if user["enabled"] and sum(bool(item["enabled"]) for item in state["users"]) == 1:
+        fail("The last enabled user cannot be removed.")
+    state["users"] = [item for item in state["users"] if item["id"] != user["id"]]
+    apply(state)
+    return emit({"removed": user["id"]})
+
+
+def rotate_user(args):
+    state = load_state()
+    user = find_user(state, args.id)
+    user["password"] = password()
+    apply(state)
+    return emit({"user": public_user(state, user, True)})
+
+
+def print_users():
+    state = load_state()
+    print(f"\nDomain: {state['server']['domain']}:{state['server']['port']}")
+    print("\nID  Status    Name")
+    for user in state["users"]:
+        print(f"{user['id']:<3} {'enabled' if user['enabled'] else 'disabled':<9} {user['name']}")
+
+
+def menu():
+    while True:
+        print("\nNaiveProxy Quick")
+        print("1  Current users\n2  Add user\n3  Enable or disable user\n4  User link\n5  Rotate password\n6  Remove user\n7  Exit")
+        choice = input("Choose: ").strip()
+        try:
+            if choice == "1": print_users()
+            elif choice == "2":
+                result = add_user(argparse.Namespace(name=input("Name: ").strip()))
+                print("\n" + result["user"]["link"])
+            elif choice == "3":
+                state = load_state(); user = find_user(state, int(input("User ID: ")))
+                set_enabled(argparse.Namespace(id=user["id"]), not user["enabled"])
+            elif choice == "4":
+                result = show_user(argparse.Namespace(id=int(input("User ID: "))))
+                print("\nKaring link:\n" + result["user"]["link"])
+                print("\nSing-box JSON:\n" + json.dumps(result["user"]["config"], indent=2, ensure_ascii=False))
+            elif choice == "5":
+                result = rotate_user(argparse.Namespace(id=int(input("User ID: "))))
+                print("\n" + result["user"]["link"])
+            elif choice == "6": remove_user(argparse.Namespace(id=int(input("User ID: "))))
+            elif choice == "7": return
+            else: print("Choose 1-7.")
+        except (ValueError, EOFError):
+            print("Enter a valid user ID.")
+
+
+def parser():
+    root = argparse.ArgumentParser(description="Manage NaiveProxy Quick users.")
+    root.add_argument("--json", action="store_true")
+    sub = root.add_subparsers(dest="command")
+    init = sub.add_parser("init"); init.add_argument("--domain", required=True); init.add_argument("--port", type=int, required=True); init.add_argument("--decoy-url", default=""); init.add_argument("--no-reload", action="store_true")
+    user = sub.add_parser("user"); actions = user.add_subparsers(dest="action", required=True)
+    actions.add_parser("list")
+    add = actions.add_parser("add"); add.add_argument("--name", required=True)
+    for name in ("show", "enable", "disable", "remove", "rotate"):
+        item = actions.add_parser(name); item.add_argument("--id", type=int, required=True)
+    return root
+
+
+def main():
+    global JSON_MODE
+    args = parser().parse_args()
+    JSON_MODE = args.json
+    if not args.command:
+        if JSON_MODE: fail("Choose a command.")
+        menu(); return
+    if args.command == "init": init_server(args); return
+    dispatch = {"list": list_users, "add": add_user, "show": show_user, "enable": lambda a: set_enabled(a, True), "disable": lambda a: set_enabled(a, False), "remove": remove_user, "rotate": rotate_user}
+    dispatch[args.action](args)
+
+
+if __name__ == "__main__":
+    main()
