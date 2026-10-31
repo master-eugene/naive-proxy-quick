@@ -24,8 +24,8 @@ PORT="$(ask_port "NaiveProxy HTTPS port" 443 "$PORT")"
 [[ "$PORT" == 443 ]] || warn "Port 443 provides the most ordinary HTTPS appearance. Custom ports may be easier to identify or block."
 
 log "Installing build and runtime packages"
-if [[ "$PKG" == apt ]]; then install_packages ca-certificates curl python3 libcap2-bin tar xz-utils procps passwd iproute2;
-else install_packages ca-certificates curl python3 libcap tar xz procps-ng shadow-utils iproute; fi
+if [[ "$PKG" == apt ]]; then install_packages ca-certificates curl python3 qrencode libcap2-bin tar xz-utils procps passwd iproute2;
+else install_packages ca-certificates curl python3 qrencode libcap tar xz procps-ng shadow-utils iproute; fi
 
 if [[ -n "$DECOY_URL" && "${DECOY_URL,,}" != none ]]; then
   python3 -c 'import sys

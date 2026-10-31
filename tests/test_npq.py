@@ -23,6 +23,9 @@ class NpqTest(unittest.TestCase):
             tool = bindir / name
             tool.write_text("#!/bin/sh\nexit 0\n")
             tool.chmod(0o755)
+        qrencode = bindir / "qrencode"
+        qrencode.write_text("#!/bin/sh\nprintf 'QR-CODE\\n'\n")
+        qrencode.chmod(0o755)
         self.env = {
             **os.environ,
             "NPQ_DATA_DIR": str(self.data),
@@ -75,6 +78,23 @@ class NpqTest(unittest.TestCase):
         result, payload = self.run_npq("user", "disable", "--id", "1", ok=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("last enabled user", payload["error"].lower())
+
+    def test_interactive_user_info_and_exit(self):
+        self.run_npq("init", "--domain", "proxy.example.com", "--port", "443", "--no-reload")
+        result = subprocess.run(
+            [str(NPQ)],
+            env=self.env,
+            input="4\n1\n1\n4\n1\n2\n4\n1\n3\n7\n",
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(result.stdout.count("ID  Status    Name"), 3)
+        self.assertIn("1  QR code", result.stdout)
+        self.assertIn("QR-CODE", result.stdout)
+        self.assertIn("Karing link:", result.stdout)
+        self.assertIn("Sing-box JSON:", result.stdout)
+        self.assertTrue(result.stdout.rstrip().endswith("Bye!"))
 
 
 if __name__ == "__main__":
