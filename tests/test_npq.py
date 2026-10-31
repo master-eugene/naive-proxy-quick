@@ -47,7 +47,9 @@ class NpqTest(unittest.TestCase):
         _, initialized = self.run_npq("init", "--domain", "proxy.example.com", "--port", "443", "--no-reload")
         self.assertEqual(initialized["server"]["domain"], "proxy.example.com")
         self.assertTrue(initialized["created"]["link"].startswith("naive+https://user-1:"))
+        self.assertTrue(initialized["created"]["link"].endswith("@proxy.example.com:443"))
         self.assertTrue(initialized["created"]["proxy"].startswith("https://user-1:"))
+        self.assertTrue(initialized["created"]["proxy"].endswith("@proxy.example.com:443"))
         config = self.caddyfile.read_text()
         self.assertIn(":443, proxy.example.com", config)
         self.assertIn("https_port 443", config)
@@ -95,6 +97,21 @@ class NpqTest(unittest.TestCase):
         self.assertIn("Karing link:", result.stdout)
         self.assertIn("Sing-box JSON:", result.stdout)
         self.assertTrue(result.stdout.rstrip().endswith("Bye!"))
+
+    def test_interactive_actions_report_success(self):
+        self.run_npq("init", "--domain", "proxy.example.com", "--port", "443", "--no-reload")
+        result = subprocess.run(
+            [str(NPQ)],
+            env=self.env,
+            input="2\nphone\n3\n2\n5\n2\n6\n2\n7\n",
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("User added successfully.", result.stdout)
+        self.assertIn("User disabled successfully.", result.stdout)
+        self.assertIn("Password rotated successfully.", result.stdout)
+        self.assertIn("User removed successfully.", result.stdout)
 
 
 if __name__ == "__main__":

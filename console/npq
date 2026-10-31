@@ -73,15 +73,13 @@ def normalize_name(raw):
 def user_link(state, user):
     server = state["server"]
     auth = f"{quote(user['name'], safe='')}:{quote(user['password'], safe='')}"
-    suffix = "" if int(server["port"]) == 443 else f":{server['port']}"
-    return f"naive+https://{auth}@{server['domain']}{suffix}"
+    return f"naive+https://{auth}@{server['domain']}:{server['port']}"
 
 
 def proxy_url(state, user):
     server = state["server"]
     auth = f"{quote(user['name'], safe='')}:{quote(user['password'], safe='')}"
-    suffix = "" if int(server["port"]) == 443 else f":{server['port']}"
-    return f"https://{auth}@{server['domain']}{suffix}"
+    return f"https://{auth}@{server['domain']}:{server['port']}"
 
 
 def client_config(state, user):
@@ -308,18 +306,23 @@ def menu():
             if choice == "1": print_users()
             elif choice == "2":
                 result = add_user(argparse.Namespace(name=input("Name: ").strip()))
-                print("\n" + result["user"]["link"])
+                print("\nUser added successfully.")
+                print(result["user"]["link"])
             elif choice == "3":
                 state, user = choose_user()
                 set_enabled(argparse.Namespace(id=user["id"]), not user["enabled"])
+                status = "enabled" if not user["enabled"] else "disabled"
+                print(f"\nUser {status} successfully.")
             elif choice == "4": user_info_menu()
             elif choice == "5":
                 _state, user = choose_user()
                 result = rotate_user(argparse.Namespace(id=user["id"]))
-                print("\n" + result["user"]["link"])
+                print("\nPassword rotated successfully.")
+                print(result["user"]["link"])
             elif choice == "6":
                 _state, user = choose_user()
                 remove_user(argparse.Namespace(id=user["id"]))
+                print("\nUser removed successfully.")
             elif choice == "7":
                 print("Bye!")
                 return
